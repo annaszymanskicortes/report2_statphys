@@ -1,0 +1,585 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Dec  9 16:53:06 2025
+
+@author: 34633
+"""
+
+import numpy as np
+import matplotlib.pyplot as plt
+from numba import njit
+import time
+import pandas as pd
+
+a = 1.0  
+steps_max = 100
+Nlist = np.arange(1, steps_max + 1, 1)
+M = 10000
+
+#1st part for free walg
+@njit
+def randomwalk_free2d(N_particles, steps, a):
+    N_particles_int = int(N_particles)
+    steps_int = int(steps)
+    positions = np.zeros((steps_int + 1, N_particles_int, 2))
+    moves = np.array([[a, 0], [-a, 0], [0, a], [0, -a]])
+    for j in range(steps_int):
+        positionsnow = positions[j].copy()
+        for i in range(N_particles_int):
+            move_idx = np.random.randint(4)
+            move = moves[move_idx]
+            positionsnow[i] = positions[j, i] + move
+        positions[j+1] = positionsnow
+    return positions
+
+@njit
+def randomwalk_free3d(N_particles, steps, a):
+    N_particles_int = int(N_particles)
+    steps_int = int(steps)
+    positions = np.zeros((steps_int + 1, N_particles_int, 3))
+    moves = np.array([[a, 0, 0], [-a, 0, 0], [0, a, 0], [0, -a, 0], [0, 0, a], [0, 0, -a]])
+    for j in range(steps_int):
+        positionsnow = positions[j].copy()
+        for i in range(N_particles_int):
+            move_idx = np.random.randint(6)
+            move = moves[move_idx]
+            positionsnow[i] = positions[j, i] + move
+        positions[j+1] = positionsnow
+    return positions
+
+
+#errors comesos en el fit
+def calculate_slope_std_error(x, y, slope):
+    N_data = len(x)
+    intercept = np.mean(y) - slope * np.mean(x)
+    residuals = y - (slope * x + intercept)
+    if N_data <= 2:
+        return np.nan
+    sigma_epsilon_sq = np.sum(residuals**2) / (N_data - 2)
+    SE_slope = np.sqrt(sigma_epsilon_sq / np.sum((x - np.mean(x))**2))
+    return SE_slope
+final_results_table = []
+dimensions = [2, 3]
+
+for D in dimensions:
+    R_results = {}
+    randomwalk_func = randomwalk_free2d if D == 2 else randomwalk_free3d
+    for k in Nlist:
+        k_int = int(k)
+        if k == 0:
+            R_results[k] = {"R2_mean": 0.0, "R2_gyr_mean": 0.0}
+            continue
+        R2_list_k = []
+        R2_gyr_list_k = []
+        for _ in range(M):
+            final_positions = randomwalk_func(1, k_int, a)
+            trajectory = final_positions[:, 0, :]
+            R_start = trajectory[0, :]
+            R_end = trajectory[-1, :]
+            R2_list_k.append(np.sum((R_end - R_start)**2))
+            monomer_positions = trajectory 
+            R_CM = np.mean(monomer_positions, axis=0)
+            R_diff = monomer_positions - R_CM
+            R2_gyr_list_k.append(np.mean(np.sum(R_diff**2, axis=1)))
+        R2_mean_k = np.mean(R2_list_k)
+        R2_gyr_mean_k = np.mean(R2_gyr_list_k)
+        R_results[k] = {"R2_mean": R2_mean_k, "R2_gyr_mean": R2_gyr_mean_k}
+    N_array = np.array(Nlist)
+    N_filtered = N_array[(N_array > 0) & (~np.isnan([R_results[N]['R2_mean'] for N in Nlist]))]
+    R2_mean_filtered = np.array([R_results[N]['R2_mean'] for N in N_filtered])
+    R2_gyr_mean_filtered = np.array([R_results[N]['R2_gyr_mean'] for N in N_filtered])
+    log_N = np.log(N_filtered)
+    log_R_rms = 0.5 * np.log(R2_mean_filtered)
+    log_R_rms_gyr = 0.5 * np.log(R2_gyr_mean_filtered)
+    nu_R, log_C_R = np.polyfit(log_N, log_R_rms, 1)
+    SE_nu_R = calculate_slope_std_error(log_N, log_R_rms, nu_R)
+    nu_Rg, log_C_Rg = np.polyfit(log_N, log_R_rms_gyr, 1)
+    SE_nu_Rg = calculate_slope_std_error(log_N, log_R_rms_gyr, nu_Rg)
+    R_rms_fit = np.exp(log_C_R) * N_filtered**nu_R
+    R_rms_gyr_fit = np.exp(log_C_Rg) * N_filtered**nu_Rg
+    final_results_table.extend([
+        {'Dim': f'{D}D', 'obs': 'End-to-End ($R_p$)', ' nu': nu_R, 'Error': SE_nu_R},
+        {'Dim': f'{D}D', 'obs': 'Radio de Giro ($R_g$)', 'nu': nu_Rg, 'Error': SE_nu_Rg}
+    ])
+
+    
+    fig = plt.figure(figsize=(9,7))
+    ax = fig.add_subplot(111)
+    ax.scatter(N_filtered, np.sqrt(R2_mean_filtered), color='cornflowerblue', marker='o', label='Datos $\\langle R_p^2 \\rangle^{1/2}$')
+    ax.plot(N_filtered, R_rms_fit, color='cornflowerblue', linestyle='--', 
+            label=f'Fit $\\sim N^{{{nu_R:.4f} \pm {SE_nu_R:.4f}}}$')
+    ax.scatter(N_filtered, np.sqrt(R2_gyr_mean_filtered), color='darkorange', marker='s', label='Datos $\\langle R_g^2 \\rangle^{1/2}$')
+    ax.plot(N_filtered, R_rms_gyr_fit, color='darkorange', linestyle='-', 
+            label=f'Fit $\\sim N^{{{nu_Rg:.4f} \pm {SE_nu_Rg:.4f}}}$')
+    ax.set_xscale('log')
+    ax.set_yscale('log')
+    ax.legend(fontsize=12, frameon=False)
+    ax.set_xlabel("Número de Monómeros (N)", fontsize=12)
+    ax.set_ylabel("Tamaño Cuadrático Medio ($\\langle R^2 \\rangle^{1/2}$)", fontsize=12)
+    ax.set_title(f'Escalamiento del Polímero Ideal en {D}D')
+    ax.grid(True, which='both', ls='--', alpha=0.5)
+    ax.tick_params(axis='both', which='major', direction='in')
+    ax.tick_params(axis='both', which='minor', direction='in')
+    plt.tight_layout()
+    plt.show()
+
+
+results_df = pd.DataFrame(final_results_table)
+results_df['Exponente $\\nu$'] = results_df['Exponente $\\nu$'].map(lambda x: f'{x:.4f}')
+results_df['Error Est.'] = results_df['Error Est.'].map(lambda x: f'±{x:.4f}')
+print(results_df.to_markdown(index=False))
+
+#selfavoid but barea averaged
+
+COLOR_MAP = {
+    '2D': {'Rp': 'cornflowerblue', 'Rg': 'darkorange'},
+    '3D': {'Rp': 'yellowgreen', 'Rg': 'darkorchid'}
+}
+
+@njit
+def map_coords_2d(coords, offset):
+    return (np.floor(coords) + offset).astype(np.int32)
+
+@njit
+def map_coords_3d(coords, offset):
+    return (np.floor(coords) + offset).astype(np.int32)
+
+@njit
+def randomwalk_selfavoid2d_numba(N_particles, steps, a):
+    N_particles_int = int(N_particles)
+    steps_int = int(steps)
+    grid_size = 2 * steps_int + 1
+    map_offset = float(steps_int) 
+    positions = np.zeros((steps_int + 1, N_particles_int, 2), dtype=np.float64)
+    visited_grids = np.zeros((N_particles_int, grid_size, grid_size), dtype=np.int8)
+    start_coords = map_coords_2d(positions[0, 0], map_offset)
+    for i in range(N_particles_int):
+        visited_grids[i, start_coords[0], start_coords[1]] = 1
+    moves = np.array([[a, 0], [-a, 0], [0, a], [0, -a]])
+    for j in range(steps_int):
+        positionsnow = positions[j].copy()
+        for i in range(N_particles_int):
+            current_pos = positions[j, i]
+            possible_moves_indices = []
+            for k in range(moves.shape[0]):
+                move = moves[k]
+                trials = current_pos + move
+                grid_x, grid_y = map_coords_2d(trials, map_offset)
+                if (0 <= grid_x < grid_size) and (0 <= grid_y < grid_size):
+                    if visited_grids[i, grid_x, grid_y] == 0:
+                        possible_moves_indices.append(k) 
+            if len(possible_moves_indices) == 0:
+                return positions[:j+1, :, :]
+            move_idx = possible_moves_indices[np.random.randint(len(possible_moves_indices))]
+            move = moves[move_idx]
+            positionsnow[i] = current_pos + move
+            new_grid_x, new_grid_y = map_coords_2d(positionsnow[i], map_offset)
+            visited_grids[i, new_grid_x, new_grid_y] = 1
+        positions[j+1] = positionsnow
+    return positions
+
+@njit
+def randomwalk_selfavoid3d_numba(N_particles, steps, a):
+    N_particles_int = int(N_particles)
+    steps_int = int(steps)
+    grid_size = 2 * steps_int + 1
+    map_offset = float(steps_int) 
+    positions = np.zeros((steps_int + 1, N_particles_int, 3), dtype=np.float64)
+    visited_grids = np.zeros((N_particles_int, grid_size, grid_size, grid_size), dtype=np.int8)
+    start_coords = map_coords_3d(positions[0, 0], map_offset)
+    for i in range(N_particles_int):
+        visited_grids[i, start_coords[0], start_coords[1], start_coords[2]] = 1
+    moves = np.array([[a, 0, 0], [-a, 0, 0], [0, a, 0], [0, -a, 0], [0, 0, a], [0, 0, -a]])
+    for j in range(steps_int):
+        positionsnow = positions[j].copy()
+        for i in range(N_particles_int):
+            current_pos = positions[j, i]
+            possible_moves_indices = []
+            for k in range(moves.shape[0]):
+                move = moves[k]
+                trials = current_pos + move
+                grid_x, grid_y, grid_z = map_coords_3d(trials, map_offset)             
+                if (0 <= grid_x < grid_size) and (0 <= grid_y < grid_size) and (0 <= grid_z < grid_size):
+                    if visited_grids[i, grid_x, grid_y, grid_z] == 0:
+                        possible_moves_indices.append(k)                   
+            if len(possible_moves_indices) == 0:
+                return positions[:j+1, :, :]
+            move_idx = possible_moves_indices[np.random.randint(len(possible_moves_indices))]
+            move = moves[move_idx]
+            positionsnow[i] = current_pos + move
+            new_grid_x, new_grid_y, new_grid_z = map_coords_3d(positionsnow[i], map_offset)
+            visited_grids[i, new_grid_x, new_grid_y, new_grid_z] = 1
+        positions[j+1] = positionsnow
+    return positions
+
+def calculate_slope_std_error(x, y, slope):
+    N_data = len(x)
+    intercept = np.mean(y) - slope * np.mean(x)
+    residuals = y - (slope * x + intercept)
+    if N_data <= 2:
+        return np.nan
+    sigma_epsilon_sq = np.sum(residuals**2) / (N_data - 2)
+    SE_slope = np.sqrt(sigma_epsilon_sq / np.sum((x - np.mean(x))**2))
+    return SE_slope
+
+
+final_results_table = []
+dimensions = [2, 3]
+
+for D in dimensions:
+    R_results = {}
+    randomwalk_func = randomwalk_selfavoid2d_numba if D == 2 else randomwalk_selfavoid3d_numba
+    D_str = f'{D}D'
+    for k in Nlist[Nlist > 0]:
+        k_int = int(k)
+        R2_list_k = []
+        R2_gyr_list_k = []
+        for _ in range(M):
+            final_positions = randomwalk_func(1, k_int, a)
+            if final_positions.shape[0] < k_int + 1:
+                continue 
+            trajectory = final_positions[:, 0, :]
+            R_start = trajectory[0, :]
+            R_end = trajectory[-1, :]
+            R2_list_k.append(np.sum((R_end - R_start)**2))
+            monomer_positions = trajectory 
+            R_CM = np.mean(monomer_positions, axis=0)
+            R_diff = monomer_positions - R_CM
+            R2_gyr_list_k.append(np.mean(np.sum(R_diff**2, axis=1)))
+        if len(R2_list_k) > 0:
+            R2_mean_k = np.mean(R2_list_k)
+            R2_gyr_mean_k = np.mean(R2_gyr_list_k)
+            R_results[k] = {"R2_mean": R2_mean_k, "R2_gyr_mean": R2_gyr_mean_k}
+        else:
+            print(f"no sacaben les iteracions")
+            break 
+    N_data = np.array(list(R_results.keys()))
+    R2_mean_data = np.array([R_results[N]['R2_mean'] for N in N_data])
+    R2_gyr_mean_data = np.array([R_results[N]['R2_gyr_mean'] for N in N_data])
+    log_N = np.log(N_data)
+    log_R_rms = 0.5 * np.log(R2_mean_data) 
+    log_R_rms_gyr = 0.5 * np.log(R2_gyr_mean_data) 
+    alpha_R, log_C_R = np.polyfit(log_N, log_R_rms, 1)
+    SE_alpha_R = calculate_slope_std_error(log_N, log_R_rms, alpha_R)
+    alpha_Rg, log_C_Rg = np.polyfit(log_N, log_R_rms_gyr, 1)
+    SE_alpha_Rg = calculate_slope_std_error(log_N, log_R_rms_gyr, alpha_Rg)
+    R_rms_fit = np.exp(log_C_R) * N_data**alpha_R
+    R_rms_gyr_fit = np.exp(log_C_Rg) * N_data**alpha_Rg
+    nu_theoretical = 0.75 if D == 2 else 0.588
+    final_results_table.extend([
+        {'Dim': D_str, 'obs': 'rp', 'nu': alpha_R, 'Error': SE_alpha_R},
+        {'Dim': D_str, 'obs': 'rg', 'nu': alpha_Rg, 'Eror': SE_alpha_Rg}
+    ])
+    fig = plt.figure(figsize=(9,7))
+    ax = fig.add_subplot(111)
+    color_rp = COLOR_MAP[D_str]['Rp']
+    color_rg = COLOR_MAP[D_str]['Rg']
+    ax.scatter(N_data, np.sqrt(R2_mean_data), color=color_rp, marker='o', label='$\\langle R_p^2 \\rangle$')
+    ax.plot(N_data, R_rms_fit, color=color_rp, linestyle='--', 
+            label=f'Fit $\\langle R_p^2 \\rangle \\sim N^{{{alpha_R:.4f}}}$')
+    ax.scatter(N_data, np.sqrt(R2_gyr_mean_data), color=color_rg, marker='s', label='$\\langle R_g^2 \\rangle$')
+    ax.plot(N_data, R_rms_gyr_fit, color=color_rg, linestyle='-', 
+            label=f'Fit $\\langle R_g^2 \\rangle \\sim N^{{{alpha_Rg:.4f}}}$')
+    ax.set_xscale('log')
+    ax.set_yscale('log')
+    ax.legend(fontsize=12, frameon=False)
+    ax.set_xlabel("Number of monomers (N)", fontsize=12)
+    ax.set_ylabel("Polymer size", fontsize=12)
+    ax.grid(False)
+    ax.tick_params(axis='both', which='minor', direction='in')
+    ax.tick_params(axis='both', which='major', direction='in')
+    plt.tight_layout()
+    plt.show()
+
+
+results_df = pd.DataFrame(final_results_table)
+
+#self avoid with rosenbluth
+
+@njit
+def map_coords_2d(coords, offset):
+    return (np.floor(coords) + offset).astype(np.int32)
+
+@njit
+def map_coords_3d(coords, offset):
+    return (np.floor(coords) + offset).astype(np.int32)
+
+@njit
+def randomwalk_selfavoid2d_weighted(N_particles, steps, a):
+    N_particles_int = int(N_particles)
+    steps_int = int(steps)
+    grid_size = 2 * steps_int + 1
+    map_offset = float(steps_int) 
+    positions = np.zeros((steps_int + 1, N_particles_int, 2), dtype=np.float64)
+    visited_grids = np.zeros((N_particles_int, grid_size, grid_size), dtype=np.int8)
+    weights_monomer = np.zeros((steps_int, N_particles_int), dtype=np.int32) 
+    
+    start_coords = map_coords_2d(positions[0, 0], map_offset)
+    for i in range(N_particles_int):
+        visited_grids[i, start_coords[0], start_coords[1]] = 1
+    moves = np.array([[a, 0], [-a, 0], [0, a], [0, -a]])
+    for j in range(steps_int):
+        positionsnow = positions[j].copy()
+        for i in range(N_particles_int):
+            current_pos = positions[j, i]
+            possible_moves_indices = []
+            for k in range(moves.shape[0]):
+                move = moves[k]
+                trials = current_pos + move
+                grid_x, grid_y = map_coords_2d(trials, map_offset)
+                
+                if (0 <= grid_x < grid_size) and (0 <= grid_y < grid_size):
+                    if visited_grids[i, grid_x, grid_y] == 0:
+                        possible_moves_indices.append(k) 
+            weights_monomer[j, i] = len(possible_moves_indices)
+            if len(possible_moves_indices) == 0:
+                return positions[:j+1, :, :], weights_monomer[:j, :] 
+            move_idx = possible_moves_indices[np.random.randint(len(possible_moves_indices))]
+            move = moves[move_idx]
+            
+            positionsnow[i] = current_pos + move
+            new_grid_x, new_grid_y = map_coords_2d(positionsnow[i], map_offset)
+            visited_grids[i, new_grid_x, new_grid_y] = 1
+        positions[j+1] = positionsnow
+    return positions, weights_monomer
+
+@njit
+def randomwalk_selfavoid3d_weighted(N_particles, steps, a):
+    N_particles_int = int(N_particles)
+    steps_int = int(steps)
+    grid_size = 2 * steps_int + 1
+    map_offset = float(steps_int) 
+    positions = np.zeros((steps_int + 1, N_particles_int, 3), dtype=np.float64)
+    visited_grids = np.zeros((N_particles_int, grid_size, grid_size, grid_size), dtype=np.int8) 
+    weights_monomer = np.zeros((steps_int, N_particles_int), dtype=np.int32)
+
+    start_coords = map_coords_3d(positions[0, 0], map_offset)
+    for i in range(N_particles_int):
+        visited_grids[i, start_coords[0], start_coords[1], start_coords[2]] = 1
+    moves = np.array([[a, 0, 0], [-a, 0, 0], [0, a, 0], [0, -a, 0], [0, 0, a], [0, 0, -a]])
+    for j in range(steps_int):
+        positionsnow = positions[j].copy()
+        for i in range(N_particles_int):
+            current_pos = positions[j, i]
+            possible_moves_indices = []
+            for k in range(moves.shape[0]):
+                move = moves[k]
+                trials = current_pos + move
+                grid_x, grid_y, grid_z = map_coords_3d(trials, map_offset)
+                if (0 <= grid_x < grid_size) and (0 <= grid_y < grid_size) and (0 <= grid_z < grid_size):
+                    if visited_grids[i, grid_x, grid_y, grid_z] == 0:
+                        possible_moves_indices.append(k)
+            weights_monomer[j, i] = len(possible_moves_indices)
+            if len(possible_moves_indices) == 0:
+                return positions[:j+1, :, :], weights_monomer[:j, :]
+            move_idx = possible_moves_indices[np.random.randint(len(possible_moves_indices))]
+            move = moves[move_idx]
+            positionsnow[i] = current_pos + move
+            new_grid_x, new_grid_y, new_grid_z = map_coords_3d(positionsnow[i], map_offset)
+            visited_grids[i, new_grid_x, new_grid_y, new_grid_z] = 1
+        positions[j+1] = positionsnow
+    return positions, weights_monomer
+
+R_results_2D = {}
+R_results_3D = {}
+
+for N in N_list:
+    N_int = int(N)
+    log_weights_2D = []
+    R2_realizations_2D = []
+    Rg2_realizations_2D = []
+    log_weights_3D = []
+    R2_realizations_3D = []
+    Rg2_realizations_3D = []
+    completed_realizations_2D = 0
+    completed_realizations_3D = 0
+
+    for _ in range(M):
+        result_2D = randomwalk_selfavoid2d_weighted(N_particles, N_int, a)
+        trajectory_2D, weights_monomer_2D = result_2D
+        if weights_monomer_2D.shape[0] == N_int:
+            traj_2D = trajectory_2D[:, 0, :]
+            weights_2D = weights_monomer_2D[:, 0]
+            completed_realizations_2D += 1
+            log_weight_k = np.sum(np.log(weights_2D))
+            log_weights_2D.append(log_weight_k)
+            
+            # R^2 
+            R_start_2D = traj_2D[0, :]
+            R_end_2D = traj_2D[-1, :]
+            R2_realization = np.sum((R_end_2D - R_start_2D)**2)
+            R2_realizations_2D.append(R2_realization)
+            
+            # R_g^2 
+            sum_of_weights_for_cm = np.sum(weights_2D)
+            R_CM_2D = np.sum(traj_2D[1:, :] * weights_2D[:, np.newaxis], axis=0) / sum_of_weights_for_cm
+            R_diff_2D = traj_2D[1:, :] - R_CM_2D 
+            Rg2_realization = np.sum(weights_2D * np.sum(R_diff_2D**2, axis=1)) / sum_of_weights_for_cm
+            Rg2_realizations_2D.append(Rg2_realization)
+        result_3D = randomwalk_selfavoid3d_weighted(N_particles, N_int, a)
+        trajectory_3D, weights_monomer_3D = result_3D
+        
+        if weights_monomer_3D.shape[0] == N_int:
+            traj_3D = trajectory_3D[:, 0, :]
+            weights_3D = weights_monomer_3D[:, 0]
+            completed_realizations_3D += 1
+            log_weight_k = np.sum(np.log(weights_3D))
+            log_weights_3D.append(log_weight_k)
+
+            # R^2
+            R_start_3D = traj_3D[0, :]
+            R_end_3D = traj_3D[-1, :]
+            R2_realization = np.sum((R_end_3D - R_start_3D)**2)
+            R2_realizations_3D.append(R2_realization)
+            
+            # R_g^2
+            sum_of_weights_for_cm = np.sum(weights_3D)
+            R_CM_3D = np.sum(traj_3D[1:, :] * weights_3D[:, np.newaxis], axis=0) / sum_of_weights_for_cm
+            R_diff_3D = traj_3D[1:, :] - R_CM_3D
+            Rg2_realization = np.sum(weights_3D * np.sum(R_diff_3D**2, axis=1)) / sum_of_weights_for_cm
+            Rg2_realizations_3D.append(Rg2_realization)
+
+    log_w_2D = np.array(log_weights_2D)
+    R2_arr_2D = np.array(R2_realizations_2D)
+    Rg2_arr_2D = np.array(Rg2_realizations_2D)
+    
+    log_w_3D = np.array(log_weights_3D)
+    R2_arr_3D = np.array(R2_realizations_3D)
+    Rg2_arr_3D = np.array(Rg2_realizations_3D)
+    if len(log_w_2D) > 0:
+        log_w_max_2D = np.max(log_w_2D)
+        w_norm_2D = np.exp(log_w_2D - log_w_max_2D)
+        R2_mean_2D = np.sum(w_norm_2D * R2_arr_2D) / np.sum(w_norm_2D)
+        Rg2_mean_2D = np.sum(w_norm_2D * Rg2_arr_2D) / np.sum(w_norm_2D)
+    else:
+        R2_mean_2D = 0.0
+        Rg2_mean_2D = 0.0
+    if len(log_w_3D) > 0:
+        log_w_max_3D = np.max(log_w_3D)
+        w_norm_3D = np.exp(log_w_3D - log_w_max_3D)
+        R2_mean_3D = np.sum(w_norm_3D * R2_arr_3D) / np.sum(w_norm_3D)
+        Rg2_mean_3D = np.sum(w_norm_3D * Rg2_arr_3D) / np.sum(w_norm_3D)
+    else:
+        R2_mean_3D = 0.0
+        Rg2_mean_3D = 0.0
+    R_results_2D[N] = {
+        "R2_mean": R2_mean_2D, 
+        "Rg2_mean": Rg2_mean_2D,
+        "Completed_realizations": completed_realizations_2D
+    }
+    R_results_3D[N] = {
+        "R2_mean": R2_mean_3D,
+        "Rg2_mean": Rg2_mean_3D,
+        "Completed_realizations": completed_realizations_3D
+    }
+def calculate_exponent(results_dict, dimension, N_min_fit=1):
+    epsilon = 1e-10
+    
+    N_list_valid = []
+    R2_valid = []
+    Rg2_valid = []
+    for N, res in results_dict.items():
+        if res['Completed_realizations'] > 0 and N > 0:
+            R2 = res['R2_mean']
+            Rg2 = res['Rg2_mean']
+            if R2 > epsilon and Rg2 > epsilon and N >= N_min_fit:
+                N_list_valid.append(N)
+                R2_valid.append(R2)
+                Rg2_valid.append(Rg2)
+
+    N_list_used = np.array(N_list_valid)
+    R2_filtered = np.array(R2_valid)
+    Rg2_filtered = np.array(Rg2_valid)
+        
+    M_fit = len(N_list_used)
+
+    log_N = np.log(N_list_used)
+    sum_sq_x_minus_xbar = np.sum((log_N - np.mean(log_N))**2)
+    log_R2 = np.log(R2_filtered)
+    exponent_R2, log_C_R = np.polyfit(log_N, log_R2, 1)
+    R2_fit_log = log_C_R + exponent_R2 * log_N
+    residuals_R2 = log_R2 - R2_fit_log
+    sum_sq_residuals_R2 = np.sum(residuals_R2**2)
+    std_err_R2 = np.sqrt( (sum_sq_residuals_R2 / (M_fit - 2)) / sum_sq_x_minus_xbar ) 
+    R2_fit = np.exp(log_C_R) * N_list_used**exponent_R2
+    log_Rg2 = np.log(Rg2_filtered)
+    exponent_Rg2, log_C_Rg = np.polyfit(log_N, log_Rg2, 1) 
+    Rg2_fit_log = log_C_Rg + exponent_Rg2 * log_N
+    residuals_Rg2 = log_Rg2 - Rg2_fit_log
+    sum_sq_residuals_Rg2 = np.sum(residuals_Rg2**2)
+    std_err_Rg2 = np.sqrt( (sum_sq_residuals_Rg2 / (M_fit - 2)) / sum_sq_x_minus_xbar ) 
+    Rg2_fit = np.exp(log_C_Rg) * N_list_used**exponent_Rg2
+    return N_list_used, exponent_R2, std_err_R2, exponent_Rg2, std_err_Rg2, R2_fit, Rg2_fit
+
+N_min_fit_val = 0 #si no va perq N massa petit, posar mes gran
+
+fit_2d = calculate_exponent(R_results_2D, "2D", N_min_fit=N_min_fit_val)
+fit_3d = calculate_exponent(R_results_3D, "3D", N_min_fit=N_min_fit_val)
+table_data = []
+if fit_2d is not None:
+    N_2D_fit, exp_R2_2D, err_R2_2D, exp_Rg2_2D, err_Rg2_2D, R2_fit_2D, Rg2_fit_2D = fit_2d
+    nu_R_2D = exp_R2_2D / 2.0
+    nu_R_err_2D = err_R2_2D / 2.0
+    nu_Rg_2D = exp_Rg2_2D / 2.0
+    nu_Rg_err_2D = err_Rg2_2D / 2.0
+    table_data.append(["2D (Teoría: 3/4)", "R^2", f"${exp_R2_2D:.4f} \pm {err_R2_2D:.4f}$", f"${nu_R_2D:.4f} \pm {nu_R_err_2D:.4f}$"])
+    table_data.append(["2D (Teoría: 3/4)", "R_g^2", f"${exp_Rg2_2D:.4f} \pm {err_Rg2_2D:.4f}$", f"${nu_Rg_2D:.4f} \pm {nu_Rg_err_2D:.4f}$"])
+
+if fit_3d is not None:
+    N_3D_fit, exp_R2_3D, err_R2_3D, exp_Rg2_3D, err_Rg2_3D, R2_fit_3D, Rg2_fit_3D = fit_3d
+    nu_R_3D = exp_R2_3D / 2.0
+    nu_R_err_3D = err_R2_3D / 2.0
+    nu_Rg_3D = exp_Rg2_3D / 2.0
+    nu_Rg_err_3D = err_Rg2_3D / 2.0
+    table_data.append(["3D (Teoría: ~0.588)", "R^2", f"${exp_R2_3D:.4f} \pm {err_R2_3D:.4f}$", f"${nu_R_3D:.4f} \pm {nu_R_err_3D:.4f}$"])
+    table_data.append(["3D (Teoría: ~0.588)", "R_g^2", f"${exp_Rg2_3D:.4f} \pm {err_Rg2_3D:.4f}$", f"${nu_Rg_3D:.4f} \pm {nu_Rg_err_3D:.4f}$"])
+df_results = pd.DataFrame(table_data, columns=["Dimensión", "Magnitud", "Exponente $2\\nu$", "Exponente $\\nu$"])
+
+
+N_list_full = np.array(list(R_results_2D.keys()))
+
+if fit_2d is not None:
+    plt.figure(figsize=(9,7))
+    plt.scatter(N_list_full, [R_results_2D[n]['R2_mean'] for n in N_list_full], color='cornflowerblue', marker='o', s=15, label='$\\langle R_P^2 \\rangle$')
+    plt.scatter(N_list_full, [R_results_2D[n]['Rg2_mean'] for n in N_list_full], color='darkorange', marker='s', s=15, label='$\\langle R_g^2 \\rangle$')
+    plt.plot(N_2D_fit, R2_fit_2D, color='cornflowerblue', linestyle='-', linewidth=2, label=f'Fit $\\langle R_P^2 \\rangle \\sim N^{{{exp_R2_2D:.3f}}}$')
+    plt.plot(N_2D_fit, Rg2_fit_2D, color='darkorange', linestyle='--', linewidth=2, label=f'Fit $\\langle R_g^2 \\rangle \\sim N^{{{exp_Rg2_2D:.3f}}}$')
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.xlabel('Number of monomers (N)', fontsize=12)
+    plt.ylabel('Polymer size', fontsize=12) # Etiqueta actualizada
+    plt.legend(loc='lower right', fontsize=12, frameon=False)
+    plt.grid(False)
+    plt.tick_params(axis='both', which='minor', direction='in')
+    plt.tick_params(axis='both', which='major', direction='in')
+    plt.tight_layout()
+    plt.show()
+
+if fit_3d is not None:
+    plt.figure(figsize=(9,7))
+    plt.scatter(N_list_full, [R_results_3D[n]['R2_mean'] for n in N_list_full], color='yellowgreen', marker='o', s=15, label='$\\langle R_P^2 \\rangle$')
+    plt.scatter(N_list_full, [R_results_3D[n]['Rg2_mean'] for n in N_list_full], color='darkorchid', marker='s', s=15, label='$\\langle R_g^2 \\rangle$')
+    plt.plot(N_3D_fit, R2_fit_3D, color='yellowgreen', linestyle='-', linewidth=2, label=f'Fit $\\langle R_P^2 \\rangle \\sim N^{{{exp_R2_3D:.3f}}}$')
+    plt.plot(N_3D_fit, Rg2_fit_3D, color='darkorchid', linestyle='--', linewidth=2, label=f'Fit $\\langle R_g^2 \\rangle \\sim N^{{{exp_Rg2_3D:.3f}}}$')
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.xlabel('Number of monomers (N)', fontsize=12)
+    plt.ylabel('Polymer size', fontsize=12) # Etiqueta actualizada
+    plt.legend(loc='lower right', fontsize=12, frameon=False)
+    plt.tick_params(axis='both', which='minor', direction='in')
+    plt.tick_params(axis='both', which='major', direction='in')
+    plt.grid(False)
+    plt.tight_layout()
+    plt.show()
+
+#exemple de trajectoria, posar la q interessi
+final_trajectory_3d, _ = randomwalk_selfavoid3d_weighted(1, N_max, a)
+final_trajectory_3d = final_trajectory_3d[:, 0, :]
+fig = plt.figure(figsize=(9, 7))
+ax = fig.add_subplot(111, projection='3d')
+ax.plot(final_trajectory_3d[:,0], final_trajectory_3d[:,1], final_trajectory_3d[:,2], '-o', markersize=3)
+ax.set_title(f'Trayectoria SAW Ponderada 3D (N={final_trajectory_3d.shape[0]-1})')
+ax.set_xlabel("X")
+ax.set_ylabel("Y")
+ax.set_zlabel("Z")
+plt.show()
